@@ -1,12 +1,16 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11
-TARGET = postit
+TARGET = build/postit
 SRC = src/main.c
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
+$(TARGET): $(SRC) | build
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+
+
+build:
+	mkdir -p build
 
 clean:
 	rm -f $(TARGET)
