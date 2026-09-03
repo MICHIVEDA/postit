@@ -1,11 +1,16 @@
+#define _DEFAULT_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/xattr.h>
+#include <unistd.h>
+
 
 #define KEY "user.postit.note"
+#define DEFAULT_EDITOR "vim"
 
 typedef enum {
   CMD_UNKNOWN,
@@ -26,12 +31,17 @@ Command parse_command(const char *cmd)
   return CMD_UNKNOWN;
 }
 
+/* for options with arguments check that argument exists and is not empty. */ 
 int validate_optarg(const char *arg)
 {
   if (arg == NULL || *arg == '\0') return -1;
   return 0;
 }
 
+/* add extended attribute.
+   <-s param> to override with custom key
+   postit add -s todo "text" file
+ */
 int handle_add(int argc, char *argv[])
 {
   char key[256];
@@ -87,6 +97,12 @@ int handle_add(int argc, char *argv[])
 
   return 0;
 }
+
+/* show extended attributes
+   <-f param> filter attributes with key e.g -f todo.
+   <-a param> show all not just from postit.
+   default is user.postit.note
+ */
 
 int handle_show(int argc, char *argv[])
 {
@@ -213,6 +229,138 @@ int handle_show(int argc, char *argv[])
   return 0;
 }
 
+/* edit extended attributes
+   <-s param> to select custom key 
+   <-e param> choose text editor
+ */
+int handle_edit(int argc, char *argv[])
+{
+  char key[256];
+  snprintf(key, sizeof(key), "%s", KEY);
+
+  int opt;
+  optind = 2;
+  opterr = 0;
+
+  const char *editor = getenv("EDITOR");
+  if (!editor) editor = DEFAULT_EDITOR;
+
+  while((opt = getopt(argc, argv, "s:e:")) != -1)
+    {
+      switch(opt) {
+      case 's':
+	if (validate_optarg(optarg) < 0)
+	  {
+	    fprintf(stderr, "%s edit: invalid argument for '-s': '%s'\n", argv[0], optarg);
+	    return -1;
+	  }
+	snprintf(key, sizeof(key), "user.postit.%s", optarg);
+	break;
+      case 'e':
+	if (validate_optarg(optarg) < 0)
+	  {
+	    fprintf(stderr, "%s edit: invalid argument for '-e': '%s'\n", argv[0], optarg);
+	    return -1;
+	  }
+	editor = optarg;
+	break;
+      case '?':
+	fprintf(stderr, "%s edit: invalid option '-%c'\n", argv[0], optopt);
+	return -1;
+      }
+    }
+
+  if (argc - optind < 1)
+    {
+      fprintf(stderr, "%s edit: missing target file\n", argv[0]);
+      return -1;
+    }
+
+  const char *file = argv[optind];
+
+  ssize_t attribute_size = getxattr(file, key, NULL, 0);
+  char *attribute = NULL;
+
+  if (attribute_size > 0)
+    {
+    attribute = malloc(attribute_size + 1);
+    if (attribute == NULL)
+      {
+	perror(argv[0]);
+	return -1;
+      }
+    getxattr(file, key, attribute, attribute_size);
+    attribute[attribute_size] = '\0';
+    }
+  else if (attribute_size < 0 && errno != ENODATA)
+    {
+      perror(argv[0]);
+      return -1;
+    }
+
+  char template[] = "/tmp/postit-XXXXXX";
+  int fd = mkstemp(template);
+
+  if (fd == -1)
+    {
+      perror("Failed to create temporary file");
+      return -1;
+    }
+
+  if (attribute)
+    {
+      write(fd, attribute, strlen(attribute));
+      free(attribute);
+    }
+
+  close(fd);
+ 
+  char cmd[256];
+  snprintf(cmd, sizeof(cmd), "%s %s", editor, template);
+
+  if (system(cmd) != 0)
+    {
+      unlink(template);
+      return -1;
+    }
+
+  FILE *fp = fopen(template, "r"); // open as byte stream for fseek to work?
+  if(fp == NULL)
+    {
+      perror(argv[0]);
+      unlink(template);
+      return -1;
+    }
+
+  fseek(fp, 0, SEEK_END);
+  size_t length = ftell(fp);
+  rewind(fp);
+  
+  char *edit = malloc(length + 1);
+  if(edit == NULL)
+    {
+      perror(argv[0]);
+      fclose(fp);
+      unlink(template);
+      return -1;
+    }
+
+  fread(edit, 1, length, fp);
+  edit[length] = '\0';
+  fclose(fp);
+  unlink(template);
+
+  if (lsetxattr(file, key, edit, strlen(edit), 0) == -1)
+    {
+      perror(argv[0]);
+      free(edit);
+      return -1;
+    }
+
+  free(edit);
+  return 0;
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -231,6 +379,7 @@ int main(int argc, char *argv[])
       if (handle_show(argc, argv) < 0) exit(EXIT_FAILURE);
       break;
     case CMD_EDIT:
+      if (handle_edit(argc, argv) < 0) exit(EXIT_FAILURE);
       break;
     case CMD_RM:
       break;
@@ -243,4 +392,3 @@ int main(int argc, char *argv[])
 
   return EXIT_SUCCESS;
 }
- 
