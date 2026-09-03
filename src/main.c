@@ -324,7 +324,7 @@ int handle_edit(int argc, char *argv[])
       return -1;
     }
 
-  FILE *fp = fopen(template, "r"); // open as byte stream for fseek to work?
+  FILE *fp = fopen(template, "rb");
   if(fp == NULL)
     {
       perror(argv[0]);
@@ -362,6 +362,115 @@ int handle_edit(int argc, char *argv[])
 }
 
 
+int handle_rm(int argc, char *argv[])
+{
+  char key[256] = "";
+  int opt;
+  optind = 2;
+  opterr = 0;
+
+  int s = 0;
+
+  while((opt = getopt(argc, argv, "s:")) != -1)
+    {
+      switch(opt) {
+      case 's':
+	if (validate_optarg(optarg) < 0)
+	  {
+	    fprintf(stderr, "%s rm: invalid argument for '-s': '%s'\n", argv[0], optarg);
+	    return -1;
+	  }
+	s = 1;
+	snprintf(key, sizeof(key), "user.postit.%s", optarg);
+	break;
+      case '?':
+	fprintf(stderr, "%s rm: invalid option '-%c'\n", argv[0], optopt);
+	return -1;
+      }
+    }
+
+  if ( argc - optind < 1)
+    {
+      fprintf(stderr, "%s rm: missing target file\n", argv[0]);
+      return -1;
+    }
+  
+  const char *file = argv[optind];
+  ssize_t list_size = listxattr(file, NULL, 0);
+  if (list_size < 0)
+    {
+      perror(argv[0]);
+      return -1;
+    }
+  if (list_size == 0)
+    {
+      printf("No attributes\n");
+      return 0;
+    }
+
+  char *list = malloc(list_size);
+  if(list == NULL)
+    {
+      perror(argv[0]);
+      return -1;
+    }
+
+  ssize_t attributes_list = listxattr(file, list, list_size);
+  if (attributes_list == -1)
+    {
+      free(list);
+      return -1;
+    }
+
+  int found = 0;
+  char *p = list;
+  while(p < list + list_size){
+    if(s)
+      {
+	if(strcmp(p, key) == 0)
+	  {
+	    found = 1;
+	    if(removexattr(file, key) < 0)
+	      {
+		if (errno == ENODATA)
+		  {
+		    fprintf(stderr, "%s rm: attribute '%s' does not exist\n", argv[0], key);
+		  }
+		else
+		  {
+		    perror(argv[0]);
+		  }
+		free(list);
+		return -1;
+	      }
+	    break;
+	  }
+      }
+    else
+      {
+	if(strncmp(p, "user.postit.", 12) == 0)
+	  {
+	    if(removexattr(file, p) < 0)
+	      {
+		free(list);
+		return -1;
+	      }
+	  }
+      }
+    p += strlen(p) + 1;
+  }
+
+  if(s && !found){
+    fprintf(stderr, "%s rm: attribute '%s' does not exist\n", argv[0], key);
+    free(list);
+    return -1;
+  }
+
+  free(list);
+  return 0;
+}
+
+
 int main(int argc, char *argv[])
 {
   if (argc < 2)
@@ -382,6 +491,7 @@ int main(int argc, char *argv[])
       if (handle_edit(argc, argv) < 0) exit(EXIT_FAILURE);
       break;
     case CMD_RM:
+      if (handle_rm(argc,argv) < 0) exit(EXIT_FAILURE);
       break;
     case CMD_HELP:
       break;
@@ -389,6 +499,5 @@ int main(int argc, char *argv[])
       fprintf(stderr, "%s: unknown command '%s'\n", argv[0], argv[1]);
       exit(EXIT_FAILURE);
     }
-
   return EXIT_SUCCESS;
 }
