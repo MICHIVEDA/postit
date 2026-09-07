@@ -8,9 +8,31 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#define _cleanup_(x) __attribute__((__cleanup__(x)))
 
 #define KEY "user.postit.note"
 #define DEFAULT_EDITOR "vim"
+
+static void cleanup(void *p)
+{
+  void **ptr = p;
+  free(*ptr);
+}
+
+static void close_file(FILE **fp)
+{
+  if(fp && *fp) fclose(*fp);
+}
+
+static void unlink_temp(char **path)
+{
+  if(path && *path)
+    {
+      unlink(*path);
+      free(*path);
+    }
+}
+
 
 typedef enum {
   CMD_UNKNOWN,
@@ -171,7 +193,7 @@ int handle_show(int argc, char *argv[])
       return 0;
     }
 
-  char *list = malloc(list_size);
+  _cleanup_(cleanup) char *list = malloc(list_size);
   if(list == NULL)
     {
       perror(argv[0]);
@@ -181,7 +203,6 @@ int handle_show(int argc, char *argv[])
   ssize_t attribute_names_list = listxattr(file, list, list_size);
   if(attribute_names_list == -1)
     {
-      free(list);
       perror(argv[0]);
       return -1;
     }
@@ -197,15 +218,13 @@ int handle_show(int argc, char *argv[])
     ssize_t attribute_size = getxattr(file, p, NULL, 0);
     if (attribute_size == -1)
       {
-	free(list);
 	perror(argv[0]);
 	return -1;
       }
 
-    char *attribute_value = malloc(attribute_size + 1);
+    _cleanup_(cleanup) char *attribute_value = malloc(attribute_size + 1);
     if(attribute_value == NULL)
       {
-	free(list);
 	perror(argv[0]);
 	return -1;
       }
@@ -213,8 +232,6 @@ int handle_show(int argc, char *argv[])
     ssize_t attribute = getxattr(file, p, attribute_value, attribute_size);
     if (attribute == -1)
       {
-	free(list);
-	free(attribute_value);
 	perror(argv[0]);
 	return -1;
       }
@@ -222,10 +239,8 @@ int handle_show(int argc, char *argv[])
     attribute_value[attribute_size] = '\0';
 
     printf("%s: %s\n", p, attribute_value);
-    free(attribute_value);
     p += strlen(p) + 1;
   }
-  free(list);
   return 0;
 }
 
@@ -279,7 +294,7 @@ int handle_edit(int argc, char *argv[])
   const char *file = argv[optind];
 
   ssize_t attribute_size = getxattr(file, key, NULL, 0);
-  char *attribute = NULL;
+  _cleanup_(cleanup) char *attribute = NULL;
 
   if (attribute_size > 0)
     {
@@ -298,66 +313,69 @@ int handle_edit(int argc, char *argv[])
       return -1;
     }
 
-  char template[] = "/tmp/postit-XXXXXX";
+  _cleanup_(unlink_temp) char *template = strdup("/tmp/postit-XXXXXX");
+  if(template == NULL)
+    {
+      perror(argv[0]);
+      return -1;
+    }
+  
   int fd = mkstemp(template);
-
   if (fd == -1)
     {
       perror("Failed to create temporary file");
       return -1;
     }
 
-  if (attribute)
-    {
-      write(fd, attribute, strlen(attribute));
-      free(attribute);
-    }
+  {
+    _cleanup_(close_file) FILE *fp = fdopen(fd, "w+");
+    if(fp == NULL)
+      {
+	perror(argv[0]);
+	close(fd);
+	return -1;
+      }
 
-  close(fd);
- 
+    if (attribute) fwrite(attribute, 1, strlen(attribute), fp);
+  }
+  
   char cmd[256];
   snprintf(cmd, sizeof(cmd), "%s %s", editor, template);
 
-  if (system(cmd) != 0)
-    {
-      unlink(template);
-      return -1;
-    }
+  if (system(cmd) != 0) return -1;
 
-  FILE *fp = fopen(template, "rb");
-  if(fp == NULL)
+  _cleanup_(close_file) FILE *fp_read = fopen(template, "rb");
+  if (fp_read == NULL)
     {
       perror(argv[0]);
-      unlink(template);
       return -1;
     }
 
-  fseek(fp, 0, SEEK_END);
-  size_t length = ftell(fp);
-  rewind(fp);
+  fseek(fp_read, 0, SEEK_END);
+  size_t length = ftell(fp_read);
+  rewind(fp_read);
   
-  char *edit = malloc(length + 1);
+  _cleanup_(cleanup) char *edit = malloc(length + 1);
   if(edit == NULL)
     {
       perror(argv[0]);
-      fclose(fp);
-      unlink(template);
       return -1;
     }
 
-  fread(edit, 1, length, fp);
+  fread(edit, 1, length, fp_read);
+  if(length > 0 && edit[length-1] == '\n')
+    {
+      length--;
+    }
+  
   edit[length] = '\0';
-  fclose(fp);
-  unlink(template);
-
+  
   if (lsetxattr(file, key, edit, strlen(edit), 0) == -1)
     {
       perror(argv[0]);
-      free(edit);
       return -1;
     }
 
-  free(edit);
   return 0;
 }
 
@@ -408,7 +426,7 @@ int handle_rm(int argc, char *argv[])
       return 0;
     }
 
-  char *list = malloc(list_size);
+  _cleanup_(cleanup) char *list = malloc(list_size);
   if(list == NULL)
     {
       perror(argv[0]);
@@ -418,7 +436,6 @@ int handle_rm(int argc, char *argv[])
   ssize_t attributes_list = listxattr(file, list, list_size);
   if (attributes_list == -1)
     {
-      free(list);
       return -1;
     }
 
@@ -440,7 +457,6 @@ int handle_rm(int argc, char *argv[])
 		  {
 		    perror(argv[0]);
 		  }
-		free(list);
 		return -1;
 	      }
 	    break;
@@ -452,7 +468,6 @@ int handle_rm(int argc, char *argv[])
 	  {
 	    if(removexattr(file, p) < 0)
 	      {
-		free(list);
 		return -1;
 	      }
 	  }
@@ -462,11 +477,9 @@ int handle_rm(int argc, char *argv[])
 
   if(s && !found){
     fprintf(stderr, "%s rm: attribute '%s' does not exist\n", argv[0], key);
-    free(list);
     return -1;
   }
 
-  free(list);
   return 0;
 }
 
