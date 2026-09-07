@@ -293,6 +293,11 @@ int handle_edit(int argc, char *argv[])
 
   fseek(fp_read, 0, SEEK_END);
   size_t length = ftell(fp_read);
+  if (length < 0)
+    {
+      perror(argv[0]);
+      return -1;
+    }
   rewind(fp_read);
   
   _cleanup_(cleanup) char *edit = malloc(length + 1);
