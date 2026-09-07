@@ -1,12 +1,12 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=gnu11
 TARGET = build/postit
-SRC = src/main.c
+SRCS = src/main.c src/utils.c
 
 all: $(TARGET)
 
 $(TARGET): $(SRC) | build
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRCS)
 
 
 build:
