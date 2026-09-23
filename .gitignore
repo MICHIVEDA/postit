@@ -1,2 +1,4 @@
 build/
 testfiles/
+compile_commands.json
+.cache/
